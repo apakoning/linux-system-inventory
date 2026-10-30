@@ -2,10 +2,11 @@
 set -uo pipefail
 umask 077
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 CREATE_TAR=1
 QUIET=0
 BASE_OUTPUT_DIR="$HOME"
+APPIMAGE_DEPTH=6
 
 usage() {
 cat <<EOF
@@ -18,6 +19,7 @@ Options:
   --help              Show this help message
   --version           Show version
   -o, --output DIR        Write inventory folder inside DIR
+  --appimage-depth N  AppImage search depth (default: 6)
   --no-tar            Do not create compressed .tar.gz archive
   -q, --quiet             Reduce console output
 
@@ -29,7 +31,7 @@ EOF
 }
 
 log() {
-    [[ "$QUIET" -eq 0 ]] && echo "$@"
+    if [[ "$QUIET" -eq 0 ]]; then printf '%s\n' "$*"; fi
 }
 
 have_cmd() {
@@ -45,19 +47,46 @@ section() {
     echo "==== $1 ===="
 }
 
-run() {
-    local name="$1"
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Commands are passed as argument arrays, never interpreted with eval.
+# Diagnostics stay in the report; status records survive pipelines/subshells.
+capture() {
+    local status=0
+    printf '\n---'; printf ' %q' "$@"; printf ' ---\n'
+    if ! have_cmd "$1"; then
+        printf 'SKIPPED: command unavailable: %s\n' "$1"
+        printf '%s\tSKIPPED\t%s\n' "$REPORT" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
+        return 0
+    fi
+    "$@" || status=$?
+    if (( status )); then
+        printf '\nFAILED: exit status %s\n' "$status"
+        printf '%s\tFAILED:%s\t%s\n' "$REPORT" "$status" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
+    else
+        printf '%s\tOK\t%s\n' "$REPORT" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
+    fi
+    return 0
+}
+
+report() {
+    REPORT="$1"
     shift
+    log "Collecting: $REPORT"
+    { section "$REPORT"; "$@"; } > "$OUT/$REPORT.txt" 2>&1 || die "Cannot write report: $REPORT"
+}
 
-    local file
-    file="$(safe_name "$name").txt"
-
-    log "Collecting: $name"
-
-    {
-        section "$name"
-        "$@" 2>&1 || printf '\nCollection command failed (status %s).\n' "$?"
-    } > "$OUT/$file" || { echo "Cannot write report: $file" >&2; exit 1; }
+# Shared filesystem collector: skip absent paths explicitly, retain find errors.
+files() {
+    local depth="$1" path
+    shift
+    for path in "$@"; do
+        if [[ -e "$path" ]]; then
+            capture find "$path" -maxdepth "$depth" -type f
+        else
+            printf 'Absent path: %s\n' "$path"
+        fi
+    done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +107,11 @@ while [[ $# -gt 0 ]]; do
             BASE_OUTPUT_DIR="$2"
             shift 2
             ;;
+        --appimage-depth)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || die "--appimage-depth requires a nonnegative integer"
+            APPIMAGE_DEPTH="$2"
+            shift 2
+            ;;
         --no-tar)
             CREATE_TAR=0
             shift
@@ -87,7 +121,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            echo "ERROR: Unknown option: $1"
+            echo "ERROR: Unknown option: $1" >&2
             echo
             usage
             exit 1
@@ -95,294 +129,279 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-HOST="$(hostname 2>/dev/null || echo unknown-host)"
-STAMP="$(date +%F_%H-%M-%S)"
-OUT="$BASE_OUTPUT_DIR/system-inventory-${HOST}-${STAMP}"
-
-mkdir -p "$BASE_OUTPUT_DIR" || exit 1
-OUT="$(mktemp -d "$OUT-XXXXXX")" || exit 1
-
+HOST="$(safe_name "$(hostname 2>/dev/null || printf unknown-host)")"
+HOST="${HOST:-unknown-host}"
+STAMP="$(date +%F_%H-%M-%S)" || die "Cannot read date"
+mkdir -p -- "$BASE_OUTPUT_DIR" || die "Cannot create output directory"
+BASE_OUTPUT_DIR="$(cd -- "$BASE_OUTPUT_DIR" && pwd -P)" || die "Cannot resolve output directory"
+OUT="$(mktemp -d "$BASE_OUTPUT_DIR/system-inventory-$HOST-$STAMP-XXXXXX")" || die "Cannot create report directory"
+STATUS_FILE="$OUT/collection-status.tsv"
+printf 'section\tstatus\tcommand\n' > "$STATUS_FILE" || die "Cannot create status log"
+export SYSTEMD_PAGER=cat PAGER=cat
 log "Linux System Inventory $VERSION"
 log "Writing inventory to: $OUT"
-log
+if (( EUID == 0 )); then
+    printf 'NOTICE: Running as root; user paths refer to %s. Run as your regular user for your personal inventory.\n' "$HOME" >&2
+fi
 
-# Basic system info
-run "system-info" bash -c '
-echo "--- hostnamectl ---"
-hostnamectl 2>/dev/null || true
-echo
+collect_system_info() {
+    echo "--- hostnamectl ---"; capture hostnamectl; echo; echo "--- /etc/os-release ---"; capture cat /etc/os-release; echo; echo "--- /etc/redhat-release ---"; capture cat /etc/redhat-release; echo; echo "--- kernel ---"; capture uname -a
+}
 
-echo "--- /etc/os-release ---"
-cat /etc/os-release 2>/dev/null || true
-echo
+collect_cpu_info() {
+    if have_cmd lscpu; then capture lscpu; else capture cat /proc/cpuinfo; fi
+}
 
-echo "--- /etc/redhat-release ---"
-cat /etc/redhat-release 2>/dev/null || true
-echo
+collect_memory_info() {
+    capture free -h; echo; capture cat /proc/meminfo
+}
 
-echo "--- kernel ---"
-uname -a
-'
+collect_block_devices() {
+    capture lsblk -f; echo; capture lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL
+}
 
-# Hardware
-run "cpu-info" bash -c '
-lscpu 2>/dev/null || cat /proc/cpuinfo 2>/dev/null || true
-'
+collect_pci_devices() {
+    capture lspci
+}
 
-run "memory-info" bash -c '
-free -h 2>/dev/null || true
-echo
-cat /proc/meminfo 2>/dev/null || true
-'
+collect_usb_devices() {
+    capture lsusb
+}
 
-run "block-devices" bash -c '
-lsblk -f 2>/dev/null || true
-echo
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL 2>/dev/null || true
-'
+collect_filesystem_usage() {
+    capture df -hT; echo; capture mount
+}
 
-run "pci-devices" bash -c '
-lspci 2>/dev/null || true
-'
+collect_network_info() {
+    capture ip addr; echo; capture ip route; echo; if have_cmd resolvectl; then capture resolvectl status; else capture cat /etc/resolv.conf; fi
+}
 
-run "usb-devices" bash -c '
-lsusb 2>/dev/null || true
-'
+collect_listening_ports() {
+    if have_cmd ss; then capture ss -tulpn; else capture netstat -tulpn; fi
+}
 
-# Filesystems
-run "filesystem-usage" bash -c '
-df -hT 2>/dev/null || true
-echo
-mount 2>/dev/null || true
-'
+collect_rpm_all_packages() {
+    capture rpm -qa --qf "%{NAME} %{VERSION}-%{RELEASE}.%{ARCH}\n" | sort
+}
 
-# Networking
-run "network-info" bash -c '
-ip addr 2>/dev/null || true
-echo
-ip route 2>/dev/null || true
-echo
-resolvectl status 2>/dev/null || cat /etc/resolv.conf 2>/dev/null || true
-'
+collect_rpm_user_installed() {
+    capture dnf repoquery --userinstalled --qf "%{name} %{evr}.%{arch}" | sort
+}
 
-run "listening-ports" bash -c '
-ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null || true
-'
+collect_rpm_extras_not_from_enabled_repos() {
+    capture dnf repoquery --extras --qf "%{name} %{evr}.%{arch}" | sort
+}
 
-# RPM / DNF
-run "rpm-all-packages" bash -c '
-have_rpm() { command -v rpm >/dev/null 2>&1; }
-have_rpm && rpm -qa --qf "%{NAME} %{VERSION}-%{RELEASE}.%{ARCH}\n" | sort || true
-'
+collect_rpm_third_party_vendors() {
+    capture rpm -qa --qf "%{NAME} | %{VERSION}-%{RELEASE}.%{ARCH} | %{VENDOR}\n" | awk 'BEGIN { IGNORECASE=1 } !/Red Hat|Fedora Project|CentOS|AlmaLinux|Rocky|Oracle/'  | sort
+}
 
-run "rpm-user-installed" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf repoquery --userinstalled --qf "%{name} %{evr}.%{arch}" 2>/dev/null | sort || true
-'
+collect_dnf_repos_enabled() {
+    capture dnf repolist --enabled
+}
 
-run "rpm-extras-not-from-enabled-repos" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf repoquery --extras --qf "%{name} %{evr}.%{arch}" 2>/dev/null | sort || true
-'
+collect_dnf_repos_all() {
+    capture dnf repolist --all
+}
 
-run "rpm-third-party-vendors" bash -c '
-command -v rpm >/dev/null 2>&1 || exit 0
-rpm -qa --qf "%{NAME} | %{VERSION}-%{RELEASE}.%{ARCH} | %{VENDOR}\n" \
-| grep -viE "Red Hat|Fedora Project|CentOS|AlmaLinux|Rocky|Oracle" \
-| sort || true
-'
+collect_dnf_repo_files() {
+    capture ls -l /etc/yum.repos.d; echo; capture cat /etc/yum.repos.d/*.repo
+}
 
-# Repositories
-run "dnf-repos-enabled" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf repolist --enabled || true
-'
+collect_dnf_modules() {
+    capture dnf module list --enabled
+}
 
-run "dnf-repos-all" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf repolist --all || true
-'
+collect_dnf_groups() {
+    capture dnf group list --installed
+}
 
-run "dnf-repo-files" bash -c '
-ls -l /etc/yum.repos.d 2>/dev/null || true
-echo
-cat /etc/yum.repos.d/*.repo 2>/dev/null || true
-'
+collect_flatpak_apps() {
+    capture flatpak list --app --columns=application,origin,branch,installation
+}
 
-run "dnf-modules" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf module list --enabled || true
-'
+collect_flatpak_remotes() {
+    capture flatpak remotes -d
+}
 
-run "dnf-groups" bash -c '
-command -v dnf >/dev/null 2>&1 && dnf group list --installed || true
-'
+collect_snap_packages() {
+    capture snap list
+}
 
-# Flatpak / Snap
-run "flatpak-apps" bash -c '
-command -v flatpak >/dev/null 2>&1 && flatpak list --app --columns=application,origin,branch,installation || true
-'
+collect_appimages() {
+    capture find "$HOME" /opt /usr/local -maxdepth "$APPIMAGE_DEPTH" -type f -iname "*.AppImage" | sort
+}
 
-run "flatpak-remotes" bash -c '
-command -v flatpak >/dev/null 2>&1 && flatpak remotes -d || true
-'
+collect_usr_local() {
+    files 4 /usr/local | sort
+}
 
-run "snap-packages" bash -c '
-command -v snap >/dev/null 2>&1 && snap list || true
-'
+collect_opt_directory() {
+    files 4 /opt | sort
+}
 
-# AppImages / manual installs
-run "appimages" bash -c '
-find "$HOME" /opt /usr/local -type f -iname "*.AppImage" 2>/dev/null | sort || true
-'
+collect_local_bin() {
+    files 4 "$HOME/.local/bin" "$HOME/bin" | sort
+}
 
-run "usr-local" bash -c '
-find /usr/local -maxdepth 4 -type f 2>/dev/null | sort || true
-'
+collect_fonts_system_and_user() {
+    capture fc-list | sort; echo; echo "--- Font directories ---"; capture find "$HOME/.local/share/fonts" "$HOME/.fonts" /usr/local/share/fonts /usr/share/fonts -type f | sort
+}
 
-run "opt-directory" bash -c '
-find /opt -maxdepth 4 -type f 2>/dev/null | sort || true
-'
+collect_nerd_fonts_detected() {
+    capture fc-list | awk 'tolower($0) ~ /nerd/' | sort; capture find "$HOME/.local/share/fonts" "$HOME/.fonts" /usr/local/share/fonts /usr/share/fonts -type f | awk 'tolower($0) ~ /nerd/' | sort
+}
 
-run "local-bin" bash -c '
-find "$HOME/.local/bin" "$HOME/bin" -type f 2>/dev/null | sort || true
-'
+collect_python_pip_user_packages() {
+    capture python3 -m pip list --user
+}
 
-# Fonts
-run "fonts-system-and-user" bash -c '
-fc-list 2>/dev/null | sort || true
-echo
-echo "--- Font directories ---"
-find "$HOME/.local/share/fonts" "$HOME/.fonts" /usr/local/share/fonts /usr/share/fonts \
-    -type f 2>/dev/null | sort || true
-'
+collect_python_pip_visible_packages() {
+    capture python3 -m pip list
+}
 
-run "nerd-fonts-detected" bash -c '
-fc-list 2>/dev/null | grep -i "nerd" | sort || true
-find "$HOME/.local/share/fonts" "$HOME/.fonts" /usr/local/share/fonts /usr/share/fonts \
-    -type f 2>/dev/null | grep -i "nerd" | sort || true
-'
+collect_npm_global_packages() {
+    capture npm list -g --depth=0
+}
 
-# Language package managers
-run "python-pip-user-packages" bash -c '
-python3 -m pip list --user 2>/dev/null || true
-'
+collect_cargo_installed() {
+    capture cargo install --list
+}
 
-run "python-pip-global-packages" bash -c '
-python3 -m pip list 2>/dev/null || true
-'
+collect_go_env_and_binaries() {
+    capture go env; echo; capture find "$HOME/go/bin" -type f | sort
+}
 
-run "npm-global-packages" bash -c '
-command -v npm >/dev/null 2>&1 && npm list -g --depth=0 || true
-'
+collect_ruby_gems() {
+    capture gem list
+}
 
-run "cargo-installed" bash -c '
-command -v cargo >/dev/null 2>&1 && cargo install --list || true
-'
+collect_perl_local() {
+    files 4 "$HOME/perl5" | sort
+}
 
-run "go-env-and-binaries" bash -c '
-command -v go >/dev/null 2>&1 && go env || true
-echo
-find "$HOME/go/bin" -type f 2>/dev/null | sort || true
-'
+collect_enabled_systemd_services() {
+    capture systemctl list-unit-files --state=enabled
+}
 
-run "ruby-gems" bash -c '
-command -v gem >/dev/null 2>&1 && gem list || true
-'
+collect_running_systemd_services() {
+    capture systemctl --type=service --state=running
+}
 
-run "perl-local" bash -c '
-find "$HOME/perl5" -maxdepth 4 -type f 2>/dev/null | sort || true
-'
+collect_failed_systemd_units() {
+    capture systemctl --failed
+}
 
-# Services
-run "enabled-systemd-services" bash -c '
-systemctl list-unit-files --state=enabled 2>/dev/null || true
-'
+collect_shell_configs() {
+    capture ls -la "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.zshrc "$HOME"/.profile
+}
 
-run "running-systemd-services" bash -c '
-systemctl --type=service --state=running 2>/dev/null || true
-'
+collect_gnome_extensions() {
+    capture gnome-extensions list
+}
 
-run "failed-systemd-units" bash -c '
-systemctl --failed 2>/dev/null || true
-'
+collect_config_directories() {
+    capture find "$HOME/.config" -maxdepth 2 -type d | sort
+}
 
-# Desktop / shell
-run "shell-configs" bash -c '
-ls -la "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.zshrc "$HOME"/.profile 2>/dev/null || true
-'
+collect_kernel_and_drivers() {
+    capture uname -r; echo; capture rpm -qa | awk 'tolower($0) ~ /nvidia|akmod|kmod|dkms|kernel|v4l2loopback/' | sort
+}
 
-run "gnome-extensions" bash -c '
-command -v gnome-extensions >/dev/null 2>&1 && gnome-extensions list || true
-'
+collect_firewall_and_selinux() {
+    capture firewall-cmd --state; echo; capture firewall-cmd --list-all; echo; capture getenforce; capture sestatus
+}
 
-run "config-directories" bash -c '
-find "$HOME/.config" -maxdepth 2 -type d 2>/dev/null | sort || true
-'
+# Ordered registry keeps dispatch separate from collector implementation.
+COLLECTORS=(
+    "system-info"
+    "cpu-info"
+    "memory-info"
+    "block-devices"
+    "pci-devices"
+    "usb-devices"
+    "filesystem-usage"
+    "network-info"
+    "listening-ports"
+    "rpm-all-packages"
+    "rpm-user-installed"
+    "rpm-extras-not-from-enabled-repos"
+    "rpm-third-party-vendors"
+    "dnf-repos-enabled"
+    "dnf-repos-all"
+    "dnf-repo-files"
+    "dnf-modules"
+    "dnf-groups"
+    "flatpak-apps"
+    "flatpak-remotes"
+    "snap-packages"
+    "appimages"
+    "usr-local"
+    "opt-directory"
+    "local-bin"
+    "fonts-system-and-user"
+    "nerd-fonts-detected"
+    "python-pip-user-packages"
+    "python-pip-visible-packages"
+    "npm-global-packages"
+    "cargo-installed"
+    "go-env-and-binaries"
+    "ruby-gems"
+    "perl-local"
+    "enabled-systemd-services"
+    "running-systemd-services"
+    "failed-systemd-units"
+    "shell-configs"
+    "gnome-extensions"
+    "config-directories"
+    "kernel-and-drivers"
+    "firewall-and-selinux"
+ )
+for name in "${COLLECTORS[@]}"; do
+    report "$name" "collect_${name//-/_}"
+done
 
-# Kernel / NVIDIA
-run "kernel-and-drivers" bash -c '
-uname -r
-echo
-rpm -qa 2>/dev/null | grep -Ei "nvidia|akmod|kmod|dkms|kernel|v4l2loopback" | sort || true
-'
-
-# Security / firewall
-run "firewall-and-selinux" bash -c '
-firewall-cmd --state 2>/dev/null || true
-echo
-firewall-cmd --list-all 2>/dev/null || true
-echo
-getenforce 2>/dev/null || true
-sestatus 2>/dev/null || true
-'
-
-# Reinstall helper
-log "Creating reinstall helper..."
-
-{
-    echo "#!/usr/bin/env bash"
-    echo "# Reinstall helper generated on $(date)"
-    echo "# Host: $HOST"
-    echo
-    echo "# Review this before running on a new system."
-    echo "# Some package names may change between releases."
-    echo
-    echo "set -euo pipefail"
-    echo 'packages=('
-
-
-    if have_cmd dnf; then
-        dnf repoquery --userinstalled --qf "%{name}" 2>/dev/null \
-            | sort -u \
-            | sed "s/.*/  '&'/"
+# A failed query must never yield an apparently valid, empty reinstall script.
+REPORT=reinstall-helper
+package_file="$OUT/dnf-user-package-names.txt"
+if have_cmd dnf; then
+    if dnf repoquery --userinstalled --qf '%{name}' > "$package_file" 2> "$OUT/reinstall-query-errors.txt"; then
+        sort -u "$package_file" -o "$package_file" || die "Cannot sort package list"
+        packages=()
+        while IFS= read -r package; do
+            [[ -z "$package" ]] && continue
+            [[ "$package" =~ ^[[:alnum:]][[:alnum:]+_.-]*$ ]] || die "Unexpected package name in DNF output; reports retained at $OUT"
+            packages+=("$package")
+        done < "$package_file"
+        helper="$OUT/reinstall-dnf-userinstalled.sh"
+        {
+            printf '#!/usr/bin/env bash\n# Review repositories and package names before running.\nset -euo pipefail\npackages=(\n'
+            if (( ${#packages[@]} )); then printf '  %q\n' "${packages[@]}"; fi
+            printf ')\nif (( ${#packages[@]} )); then\n    sudo dnf install -- "${packages[@]}"\nelse\n    echo "No user-installed packages recorded."\nfi\n'
+        } > "$helper" || die "Cannot write reinstall helper"
+        chmod 700 "$helper" || die "Cannot make reinstall helper executable"
+    else
+        printf 'Reinstall helper omitted: DNF query failed. See reinstall-query-errors.txt.\n' > "$OUT/reinstall-helper-unavailable.txt" || die "Cannot write helper status"
+        printf 'reinstall-helper\tFAILED\tdnf repoquery\n' >> "$STATUS_FILE" || die "Cannot write status"
+        rm -f -- "$package_file" || die "Cannot remove incomplete package list"
     fi
-    echo ')'
-    echo 'if (( ${#packages[@]} )); then sudo dnf install -- "${packages[@]}"; else echo "No DNF package list available."; fi'
-} > "$OUT/reinstall-dnf-userinstalled.sh"
+else
+    printf 'Reinstall helper omitted: dnf unavailable.\n' > "$OUT/reinstall-helper-unavailable.txt" || die "Cannot write helper status"
+    printf 'reinstall-helper\tSKIPPED\tdnf\n' >> "$STATUS_FILE" || die "Cannot write status"
+fi
 
-chmod +x "$OUT/reinstall-dnf-userinstalled.sh"
-
-# Summary
 {
-    echo "Linux System Inventory $VERSION"
-    echo "Generated: $(date)"
-    echo "Host: $HOST"
-    echo "Output directory: $OUT"
-    echo
-    echo "Files generated:"
-    find "$OUT" -maxdepth 1 -type f -printf "%f\n" | sort
-} > "$OUT/summary.txt"
+    printf 'Linux System Inventory %s\nHost: %s\nOutput directory: %s\n' "$VERSION" "$HOST" "$OUT"
+    printf 'Inspect collection-status.tsv for skipped or failed commands.\n'
+    printf 'Reports are an inventory, not a backup. Shell configuration contents are not copied.\n'
+    printf 'AppImage search maximum depth: %s\n' "$APPIMAGE_DEPTH"
+} > "$OUT/summary.txt" || die "Cannot write summary"
 
-# Archive
-if [[ "$CREATE_TAR" -eq 1 ]]; then
+if (( CREATE_TAR )); then
     log "Creating archive..."
-    tar -czf "$OUT.tar.gz" -C "$(dirname "$OUT")" "$(basename "$OUT")" || { echo "Archive creation failed." >&2; exit 1; }
+    if ! tar -czf "$OUT.tar.gz" -C "$(dirname "$OUT")" "$(basename "$OUT")"; then
+        die "Archive creation failed; reports retained at $OUT (archive may be incomplete)"
+    fi
 fi
-
-echo
-echo "Done."
-echo "Inventory folder:"
-echo "$OUT"
-
-if [[ "$CREATE_TAR" -eq 1 ]]; then
-    echo
-    echo "Compressed archive:"
-    echo "$OUT.tar.gz"
-fi
-
+printf '\nDone. Inventory folder: %s\n' "$OUT"
+if (( CREATE_TAR )); then printf 'Compressed archive: %s.tar.gz\n' "$OUT"; fi

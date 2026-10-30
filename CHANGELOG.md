@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-10-30
+
+- Replace shell command strings with direct collector functions and an ordered registry.
+- Centralize optional-command handling and record command status and diagnostics.
+- Validate reinstall queries and generated package names; omit misleading helpers on failure.
+- Preserve reports on archive failure, bound AppImage scans, and clarify Python inventory scope.
+- Add regression coverage for failed queries and successful/failed archives.
+
+
 ## 1.2.0 — 2026-10-30
 
 - Consolidated the hardware/network collectors previously present only in Handy-Scripts.

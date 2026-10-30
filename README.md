@@ -28,7 +28,7 @@ The script lists shell configuration metadata; it does not copy shell configurat
 
 ## Requirements and scope
 
-Bash 4+, GNU core utilities, `find` and `tar`. The main target is RHEL 9 and related RPM/DNF systems. Hardware details use optional commands such as `lspci` and `lsusb`. Unavailable optional tools leave partial or empty sections; the utility does not install packages.
+Bash 4+, GNU core utilities, `find` and `tar`. The main target is RHEL 9 and related RPM/DNF systems. Hardware details use optional commands such as `lspci` and `lsusb`. Unavailable optional tools and failed commands are recorded in `collection-status.tsv`; the utility does not install packages.
 
 It can collect partial information elsewhere, but Debian/Ubuntu package inventory is **not implemented**. Compatibility with every listed tool and distribution is not implied by the automated smoke checks.
 
@@ -38,6 +38,7 @@ It can collect partial information elsewhere, but Debian/Ubuntu package inventor
 -h, --help        Show help
 -v, --version     Show version
 -o, --output DIR  Parent directory for the generated report
+--appimage-depth N  AppImage search maximum depth (default: 6)
 --no-tar          Skip the .tar.gz archive
 -q, --quiet       Suppress collection progress; retain final output paths
 ```
@@ -52,6 +53,7 @@ Each run creates a unique directory with restrictive permissions:
 
 ```text
 system-inventory-example-host-2026-10-30_12-00-00-ABC123/
+  collection-status.tsv
   summary.txt
   system-info.txt
   cpu-info.txt
@@ -62,7 +64,9 @@ system-inventory-example-host-2026-10-30_12-00-00-ABC123/
   ...
 ```
 
-See [examples/sample-report.md](examples/sample-report.md) for an illustrative report excerpt. Reports are snapshots, not a backup or a restore guarantee. DNF metadata queries can contact enabled repositories and refresh local metadata.
+See [examples/sample-report.md](examples/sample-report.md) for an illustrative report excerpt. Reports are snapshots, not a backup or a restore guarantee. DNF metadata queries can contact enabled repositories and refresh local metadata. A failed reinstall query omits the executable helper and creates an explanatory status file.
+
+The report directory is retained after archiving, including when archive creation fails. Quiet mode still prints final output paths. AppImage searches are limited to six directory levels by default; use `--appimage-depth N` to adjust this. Python reports cover the selected `python3` interpreter, not all installed interpreters or virtual environments.
 
 ## Development
 
