@@ -1,128 +1,78 @@
 # Linux System Inventory
 
-A professional Bash utility for collecting comprehensive system information from Linux workstations and servers.
+[![Checks](https://github.com/apakoning/linux-system-inventory/actions/workflows/checks.yml/badge.svg)](https://github.com/apakoning/linux-system-inventory/actions/workflows/checks.yml)
 
-Designed for system administrators, DevOps engineers and technical support professionals to quickly document systems, troubleshoot issues and perform infrastructure audits.
+A Bash utility that collects hardware, software, networking and service information into a private local report directory, with an optional compressed archive. Built for system documentation, support and migration preparation.
 
----
-
-## Features
-
-- Operating system identification
-- CPU information
-- Memory statistics
-- Disk and filesystem layout
-- Mounted filesystems
-- Network interfaces
-- IP configuration
-- Running services
-- Installed software
-- Third-party application detection
-- Hardware overview
-- Storage devices
-- Useful troubleshooting information
-
----
-
-## Typical Use Cases
-
-- System documentation
-- Infrastructure inventory
-- Migration planning
-- Server health checks
-- Technical support
-- Remote troubleshooting
-- Linux workstation audits
-
----
-
-## Requirements
-
-- Bash
-- Standard Linux command-line utilities
-
-The script is designed to run on modern Linux distributions including:
-
-- Red Hat Enterprise Linux
-- Rocky Linux
-- AlmaLinux
-- Fedora
-- Ubuntu
-- Debian
-- openSUSE
-
----
-
-## Installation
-
-Clone the repository:
+## Quick start
 
 ```bash
-git clone git@github.com:apakoning/linux-system-inventory.git
-```
-
-Enter the project directory:
-
-```bash
+git clone https://github.com/apakoning/linux-system-inventory.git
 cd linux-system-inventory
+bash system-inventory.sh --output "$HOME/Inventory"
 ```
 
-Make the script executable:
+Run as your regular user to inventory your own applications and configuration paths. Some privileged information may be unavailable; running the whole script through `sudo` changes which home directory is inspected.
+
+## Collected information
+
+- Distribution, kernel, CPU, memory, disks, filesystems, PCI and USB devices.
+- Interfaces, routes, DNS configuration and listening ports.
+- RPM packages, DNF repositories, modules and package groups.
+- Flatpak, Snap, AppImages and available language package managers.
+- Enabled, running and failed systemd services; firewall and SELinux status.
+- Fonts, GNOME extension names and local installation/configuration paths.
+- A review-before-use DNF package reinstall helper.
+
+The script lists shell configuration metadata; it does not copy shell configuration contents. Repository definitions are included, so review reports for embedded credentials and internal hostnames before sharing them.
+
+## Requirements and scope
+
+Bash 4+, GNU core utilities, `find` and `tar`. The main target is RHEL 9 and related RPM/DNF systems. Hardware details use optional commands such as `lspci` and `lsusb`. Unavailable optional tools leave partial or empty sections; the utility does not install packages.
+
+It can collect partial information elsewhere, but Debian/Ubuntu package inventory is **not implemented**. Compatibility with every listed tool and distribution is not implied by the automated smoke checks.
+
+## Options
+
+```text
+-h, --help        Show help
+-v, --version     Show version
+-o, --output DIR  Parent directory for the generated report
+--no-tar          Skip the .tar.gz archive
+-q, --quiet       Suppress collection progress; retain final output paths
+```
 
 ```bash
-chmod +x system-inventory.sh
+bash system-inventory.sh --no-tar --quiet --output /tmp/inventory
 ```
 
-Run it:
+## Output
+
+Each run creates a unique directory with restrictive permissions:
+
+```text
+system-inventory-example-host-2026-10-30_12-00-00-ABC123/
+  summary.txt
+  system-info.txt
+  cpu-info.txt
+  memory-info.txt
+  network-info.txt
+  rpm-all-packages.txt
+  reinstall-dnf-userinstalled.sh
+  ...
+```
+
+See [examples/sample-report.md](examples/sample-report.md) for an illustrative report excerpt. Reports are snapshots, not a backup or a restore guarantee. DNF metadata queries can contact enabled repositories and refresh local metadata.
+
+## Development
 
 ```bash
-./system-inventory.sh
+bash -n system-inventory.sh
+python3 -m unittest discover -s tests -v
 ```
 
----
-
-## Example Output
-
-The script reports information such as:
-
-- Distribution and kernel version
-- CPU model
-- Installed memory
-- Filesystem usage
-- Network configuration
-- Installed packages
-- Running services
-- Hardware summary
-
----
-
-## Roadmap
-
-Future improvements include:
-
-- JSON output
-- HTML reporting
-- CSV export
-- Inventory comparison
-- Automatic report generation
-- Optional hardware benchmarking
-
----
-
-## Author
-
-**Alain P.A. Koningverdraag**
-
-Linux Systems Engineer • Infrastructure • Automation • Technical Support
-
-GitHub:
-https://github.com/apakoning
-
-LinkedIn:
-https://www.linkedin.com/in/alain-koningverdraag/
-
----
+The regression checks mock system commands; they never inventory the CI host or install packages.
 
 ## License
 
-This project is released under the MIT License.
+[MIT](LICENSE). Maintained by [Alain A.P. Koningverdraag](https://github.com/apakoning).
