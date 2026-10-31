@@ -23,6 +23,8 @@ class Report(unittest.TestCase):
             content = output.read_text()
             self.assertIn('64.0 GiB', content)
             self.assertIn('demo-host', content)
+            self.assertIn('Collector summary found', content)
+            self.assertIn('No reinstall helper was generated', content)
             self.assertIn('FAILED:124', content)
             self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', content)
             self.assertNotIn('<script>alert(1)</script>', content)
@@ -36,5 +38,6 @@ class Report(unittest.TestCase):
                                      '--render-only', directory], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((Path(directory) / 'index.html').exists())
+            self.assertIn('Collector summary missing', (Path(directory) / 'index.html').read_text())
             self.assertIn('Collection completeness is unknown',
                           (Path(directory) / 'index.html').read_text())

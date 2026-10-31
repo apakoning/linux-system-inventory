@@ -84,6 +84,15 @@ def render(directory):
                          f'<td>{esc(cols[3])} / {esc(cols[2])}</td><td><div class="meter" role="img" aria-label="{pct}% used"><i style="width:{pct}%"></i></div><small>{pct}% used</small></td></tr>')
     storage = ''.join(disks) or '<tr><td colspan="3">Filesystem capacity data not recorded.</td></tr>'
     helper_notice = reports.get('reinstall-helper-unavailable', '').strip()
+    if not helper_notice and not (directory / 'reinstall-dnf-userinstalled.sh').is_file():
+        helper_notice = 'No reinstall helper was generated in this inventory.'
+        package_text = reports.get('dnf-user-package-names', '')
+        invalid = [line for line in package_text.splitlines() if line.strip()
+                   and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]*', line)]
+        if invalid:
+            helper_notice += ' Package-query output contains non-package text; helper generation was not safe.'
+    completion = ('Collector summary found.' if summary else
+                  'Collector summary missing: completion is unconfirmed. Available reports are shown below.')
     stamp = field(summary, 'Generated', 'Collection time not recorded')
     # Text is HTML escaped and never inserted as executable script or markup.
     document = TEMPLATE.replace('@@HOST@@', esc(host)).replace('@@DISTRO@@', esc(distro))
@@ -94,6 +103,7 @@ def render(directory):
         'ISSUES': issue_html, 'REPORTS': '\n'.join(sections), 'NAV': '\n'.join(nav),
         'STORAGE': storage, 'STAMP': esc(stamp),
         'HELPER': esc(helper_notice) if helper_notice else 'Review the generated reinstall helper before use. It is never executed by the collector.',
+        'COMPLETION': esc(completion),
         'BUILT': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
     }
     for key, value in values.items():
@@ -113,6 +123,7 @@ TEMPLATE = r'''<!doctype html>
 <aside><div class="brand"><b>◈</b> SYSTEM INVENTORY</div><p style="font-size:12px">Linux · local report</p><div class="eyebrow">Snapshot</div><a href="#overview">System overview</a><a href="#health">Collection status</a><a href="#storage">Filesystem capacity</a><div class="eyebrow">Collected sections</div>@@NAV@@</aside>
 <main><header id="overview"><div class="topline"><span class="eyebrow">Infrastructure / Inventory snapshot</span><span class="local">OFFLINE · SELF-CONTAINED</span></div><h1>@@HOST@@</h1><p class="lede">@@DISTRO@@</p><p class="lede">A searchable record of the hardware, software and services collected from this machine.</p></header>
 <div class="overview"><div class="card"><div class="label">PROCESSOR</div><div class="value">@@CPU@@</div><small>@@THREADS@@ logical CPUs recorded</small></div><div class="card"><div class="label">PHYSICAL MEMORY</div><div class="value">@@RAM@@</div><small>Total reported by /proc/meminfo</small></div><div class="card"><div class="label">REPORT SECTIONS</div><div class="value">@@SECTIONS@@</div><small>Expand a section to inspect output</small></div></div>
+<div class="note">@@COMPLETION@@</div>
 <div class="status-strip"><div class="pill ok"><strong>@@OK@@</strong> commands completed</div><div class="pill failed"><strong>@@FAILED@@</strong> collection errors</div><div class="pill skipped"><strong>@@SKIPPED@@</strong> commands skipped</div></div>
 <section class="panel" id="health"><span class="eyebrow">Coverage / Diagnostics</span><h2>Know what was collected.</h2><p>These are collection outcomes, not a system-health score. Missing tools, permissions and cached repository metadata can leave partial reports.</p><div class="table-wrap"><table><thead><tr><th>Section</th><th>Outcome</th><th>Command</th></tr></thead><tbody>@@ISSUES@@</tbody></table></div><div class="note">@@HELPER@@</div></section>
 <section class="panel" id="storage"><span class="eyebrow">Storage / Snapshot</span><h2>Filesystem capacity</h2><p>Usage recorded by df; temporary and virtual filesystems may also appear.</p><div class="table-wrap"><table><thead><tr><th>Mount / Filesystem</th><th>Used / Total</th><th>Capacity used</th></tr></thead><tbody>@@STORAGE@@</tbody></table></div></section>
