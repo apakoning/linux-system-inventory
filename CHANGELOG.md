@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 — 2026-10-30
+
+- Add an offline HTML report with overview cards, storage bars, searchable collapsible sections and visible collection outcomes.
+- Render existing inventories without recollecting system data.
+- Bound commands with timeouts, close stdin, query cached DNF metadata and skip unprivileged firewall authentication.
+- Preserve unexpected DNF output and omit unsafe reinstall helpers without aborting the report.
+- Replace the minimal report example with a reproducible fictional HTML demonstration.
+
+
 ## 1.3.0 — 2026-10-30
 
 - Replace shell command strings with direct collector functions and an ordered registry.

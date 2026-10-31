@@ -15,7 +15,7 @@ class Inventory(unittest.TestCase):
             self.assertEqual(subprocess.run(['/bin/bash', str(SCRIPT), *args],
                                             capture_output=True).returncode, expected)
 
-    def collect(self, base, *, archive=False, dnf_failure=False, tar_failure=False):
+    def collect(self, base, *, archive=False, dnf_failure=False, tar_failure=False, dirty_dnf=False, slow_cpu=False, read_stdin=False):
         bin_dir = base / 'bin'
         bin_dir.mkdir()
         # Block real inventory/network calls while exercising collector functions.
@@ -29,6 +29,12 @@ class Inventory(unittest.TestCase):
         (bin_dir / 'dnf').write_text('#!/bin/sh\n' + (
             'echo "query failed" >&2\nexit 9\n' if dnf_failure else
             'printf "bash\\ncoreutils\\n"\n'))
+        if dirty_dnf:
+            (bin_dir / 'dnf').write_text('#!/bin/sh\nprintf "Subscription notice: cached metadata\\nbash\\n"\n')
+        if slow_cpu:
+            (bin_dir / 'lscpu').write_text('#!/bin/sh\nsleep 8\n')
+        if read_stdin:
+            (bin_dir / 'lscpu').write_text('#!/bin/sh\nif read line; then echo BAD_INPUT; else echo INPUT_CLOSED; fi\n')
         if tar_failure:
             (bin_dir / 'tar').write_text('#!/bin/sh\nexit 2\n')
         for path in bin_dir.iterdir():
@@ -38,10 +44,11 @@ class Inventory(unittest.TestCase):
         out = base / 'output with spaces'
         result = subprocess.run(
             ['/bin/bash', str(SCRIPT), '--output', str(out), '--quiet',
-             *([] if archive else ['--no-tar'])],
+             *([] if archive else ['--no-tar']),
+             *(['--command-timeout', '1'] if slow_cpu else [])],
             env={**os.environ, 'HOME': str(home),
                  'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']},
-            capture_output=True, text=True)
+            input='should not reach commands\n', capture_output=True, text=True, timeout=20)
         report = next(p for p in out.iterdir() if p.is_dir())
         return result, report
 
@@ -80,6 +87,28 @@ class Inventory(unittest.TestCase):
             with tarfile.open(str(report) + '.tar.gz') as archive:
                 self.assertIn(report.name + '/summary.txt', archive.getnames())
             self.assertTrue(report.is_dir())
+
+    def test_non_package_output_does_not_abort_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, report = self.collect(Path(directory), archive=True, dirty_dnf=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((report / 'reinstall-dnf-userinstalled.sh').exists())
+            self.assertTrue(Path(str(report) + '.tar.gz').exists())
+            self.assertIn('invalid-output', (report / 'collection-status.tsv').read_text())
+
+    def test_timeout_records_failure_and_continues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, report = self.collect(Path(directory), slow_cpu=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('FAILED:124', (report / 'collection-status.tsv').read_text())
+            self.assertTrue((report / 'summary.txt').exists())
+
+    def test_command_input_is_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, report = self.collect(Path(directory), read_stdin=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('INPUT_CLOSED', (report / 'cpu-info.txt').read_text())
+            self.assertNotIn('BAD_INPUT', (report / 'cpu-info.txt').read_text())
 
     def test_unwritable_output_fails(self):
         with tempfile.TemporaryDirectory() as directory:

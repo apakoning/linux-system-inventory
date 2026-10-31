@@ -2,9 +2,13 @@
 
 [![Checks](https://github.com/apakoning/linux-system-inventory/actions/workflows/checks.yml/badge.svg)](https://github.com/apakoning/linux-system-inventory/actions/workflows/checks.yml)
 
-A Bash utility that collects hardware, software, networking and service information into a private local report directory, with an optional compressed archive. Built for system documentation, support and migration preparation.
+**Know your machine. See what was collected. Find the detail you need.**
 
-## Quick start
+A Bash inventory collector for RHEL and related RPM/DNF systems, with a self-contained HTML report. Inspect hardware, software, services and collection diagnostics from one searchable page. Keep the raw text for terminal work and support.
+
+*Fictional demonstration data. [Download the example HTML](examples/sample-report.html) and open it locally for search and collapsible sections. GitHub's file viewer displays its source.*
+
+## Start here
 
 ```bash
 git clone https://github.com/apakoning/linux-system-inventory.git
@@ -12,70 +16,67 @@ cd linux-system-inventory
 bash system-inventory.sh --output "$HOME/Inventory"
 ```
 
-Run as your regular user to inventory your own applications and configuration paths. Some privileged information may be unavailable; running the whole script through `sudo` changes which home directory is inspected.
+Open `index.html` in the generated directory. It works offline, with no CDN, web server or external JavaScript library. The report directory is retained alongside its optional `.tar.gz` archive.
 
-## Collected information
+Run as your regular user. The collector does not execute the reinstall helper, invoke `sudo`, or request firewall-rule authentication. Running the whole script through `sudo` changes the home directory being inspected.
 
-- Distribution, kernel, CPU, memory, disks, filesystems, PCI and USB devices.
-- Interfaces, routes, DNS configuration and listening ports.
-- RPM packages, DNF repositories, modules and package groups.
-- Flatpak, Snap, AppImages and available language package managers.
-- Enabled, running and failed systemd services; firewall and SELinux status.
-- Fonts, GNOME extension names and local installation/configuration paths.
-- A review-before-use DNF package reinstall helper.
+## A report you can explore
 
-The script lists shell configuration metadata; it does not copy shell configuration contents. Repository definitions are included, so review reports for embedded credentials and internal hostnames before sharing them.
+- **System overview:** distribution, processor, logical CPUs, physical memory and report coverage.
+- **Collection diagnostics:** completed commands, skipped tools and collection errors, with command-level status. These are collection outcomes, not a system-health score.
+- **Filesystem capacity:** labeled usage bars from the recorded `df` output.
+- **Search:** filter section titles and their complete collected output, then filter by collection status.
+- **Collapsible evidence:** expand individual sections or all visible results.
+- **Raw files:** text reports, a status TSV and a review-before-use DNF reinstall helper when a clean package query succeeds.
 
-## Requirements and scope
+The utility records distribution, kernel, CPU, memory, disks, filesystems, PCI/USB devices, networking, RPM packages, repositories, Flatpak/Snap, language package managers, fonts, GNOME extensions, systemd and security-tool output. It lists shell configuration metadata, not configuration contents.
 
-Bash 4+, GNU core utilities, `find` and `tar`. The main target is RHEL 9 and related RPM/DNF systems. Hardware details use optional commands such as `lspci` and `lsusb`. Unavailable optional tools and failed commands are recorded in `collection-status.tsv`; the utility does not install packages.
+## Unattended collection
 
-It can collect partial information elsewhere, but Debian/Ubuntu package inventory is **not implemented**. Compatibility with every listed tool and distribution is not implied by the automated smoke checks.
+Every collected command runs with standard input closed and a default 30-second timeout (plus a five-second termination grace period). A failure leaves a diagnostic and collection continues. DNF queries use **cached metadata only**, quiet mode, an automatic “no” response and a disabled subscription-manager plugin. Repositories without usable local metadata may produce partial results; the script does not refresh their caches or perform registration.
+
+Firewall rule listing is skipped for non-root users to avoid PolicyKit authentication. Other privileged details may be unavailable. A failed or contaminated package query omits the executable reinstall helper, preserves diagnostics and still allows HTML generation and archiving.
+
+## Render an existing inventory
+
+No need to collect again when you already have text reports:
+
+```bash
+bash system-inventory.sh --render-only /path/to/system-inventory-folder
+```
+
+The renderer does not query the host. Missing fields are shown as “Not recorded”; older reports without a status log show unknown coverage. Regenerating HTML does not rebuild an existing archive.
 
 ## Options
 
-```text
--h, --help        Show help
--v, --version     Show version
--o, --output DIR  Parent directory for the generated report
---appimage-depth N  AppImage search maximum depth (default: 6)
---no-tar          Skip the .tar.gz archive
--q, --quiet       Suppress collection progress; retain final output paths
-```
+| Option | Purpose |
+| --- | --- |
+| `-h`, `--help` | Show help |
+| `-v`, `--version` | Show version |
+| `-o`, `--output DIR` | Parent directory for the new report |
+| `--render-only DIR` | Generate HTML from an existing report directory |
+| `--command-timeout N` | Maximum seconds per command; default 30 |
+| `--appimage-depth N` | AppImage search depth; default 6 |
+| `--no-tar` | Omit the archive |
+| `-q`, `--quiet` | Suppress progress; retain final paths |
 
-```bash
-bash system-inventory.sh --no-tar --quiet --output /tmp/inventory
-```
+## Requirements and limits
 
-## Output
+Bash 4+, GNU core utilities including `timeout`, `find`, `tar`, and **Python 3 for HTML generation**. The renderer uses only the Python standard library. Without Python, collection still produces text reports. Optional tools are never installed automatically.
 
-Each run creates a unique directory with restrictive permissions:
+Primary target: RHEL 9 and related systems using DNF 4. Other distributions receive partial coverage; Debian/Ubuntu package inventory and DNF 5 compatibility are not implemented or promised. Python package reports describe the selected `python3` interpreter, not every environment. Filesystem searches have a depth limit.
 
-```text
-system-inventory-example-host-2026-10-30_12-00-00-ABC123/
-  collection-status.tsv
-  summary.txt
-  system-info.txt
-  cpu-info.txt
-  memory-info.txt
-  network-info.txt
-  rpm-all-packages.txt
-  reinstall-dnf-userinstalled.sh
-  ...
-```
-
-See [examples/sample-report.md](examples/sample-report.md) for an illustrative report excerpt. Reports are snapshots, not a backup or a restore guarantee. DNF metadata queries can contact enabled repositories and refresh local metadata. A failed reinstall query omits the executable helper and creates an explanatory status file.
-
-The report directory is retained after archiving, including when archive creation fails. Quiet mode still prints final output paths. AppImage searches are limited to six directory levels by default; use `--appimage-depth N` to adjust this. Python reports cover the selected `python3` interpreter, not all installed interpreters or virtual environments.
+Reports are snapshots, not backups or restore guarantees. They include network addresses, serial numbers, repository definitions and other machine details. Inspect them for credentials before sharing. The public example contains fictional data and is generated independently of any real inventory.
 
 ## Development
 
 ```bash
 bash -n system-inventory.sh
 python3 -m unittest discover -s tests -v
+python3 examples/generate-demo.py
 ```
 
-The regression checks mock system commands; they never inventory the CI host or install packages.
+Regression tests mock collection commands and cover unattended input, timeouts, invalid package output, archive failure, HTML escaping and rendering existing reports. They do not install packages or inventory the test host.
 
 ## License
 

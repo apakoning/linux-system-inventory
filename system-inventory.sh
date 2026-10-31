@@ -2,11 +2,16 @@
 set -uo pipefail
 umask 077
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 CREATE_TAR=1
 QUIET=0
 BASE_OUTPUT_DIR="$HOME"
 APPIMAGE_DEPTH=6
+COMMAND_TIMEOUT=30
+RENDER_ONLY=""
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# Cached queries only; do not invoke the subscription plugin or refresh repositories.
+DNF=(dnf -q --cacheonly --assumeno --disableplugin=subscription-manager)
 
 usage() {
 cat <<EOF
@@ -20,6 +25,8 @@ Options:
   --version           Show version
   -o, --output DIR        Write inventory folder inside DIR
   --appimage-depth N  AppImage search depth (default: 6)
+  --command-timeout N Maximum seconds per command (default: 30)
+  --render-only DIR   Build HTML from an existing inventory; no collection
   --no-tar            Do not create compressed .tar.gz archive
   -q, --quiet             Reduce console output
 
@@ -35,7 +42,9 @@ log() {
 }
 
 have_cmd() {
-    command -v "$1" >/dev/null 2>&1
+    local name="$1"
+    [[ "$name" == dnf_query ]] && name=dnf
+    command -v "$name" >/dev/null 2>&1
 }
 
 safe_name() {
@@ -59,7 +68,7 @@ capture() {
         printf '%s\tSKIPPED\t%s\n' "$REPORT" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
         return 0
     fi
-    "$@" || status=$?
+    execute "$@" || status=$?
     if (( status )); then
         printf '\nFAILED: exit status %s\n' "$status"
         printf '%s\tFAILED:%s\t%s\n' "$REPORT" "$status" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
@@ -67,6 +76,20 @@ capture() {
         printf '%s\tOK\t%s\n' "$REPORT" "$1" >> "$STATUS_FILE" || die "Cannot write status log"
     fi
     return 0
+}
+
+# Bound waits and close standard input: inventory commands must be unattended.
+execute() {
+    if [[ "$1" == dnf_query ]]; then
+        shift
+        timeout --kill-after=5s "${COMMAND_TIMEOUT}s" "${DNF[@]}" "$@" </dev/null
+    else
+        timeout --kill-after=5s "${COMMAND_TIMEOUT}s" "$@" </dev/null
+    fi
+}
+
+dnf_query() {
+    "${DNF[@]}" "$@"
 }
 
 report() {
@@ -112,6 +135,16 @@ while [[ $# -gt 0 ]]; do
             APPIMAGE_DEPTH="$2"
             shift 2
             ;;
+        --command-timeout)
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || die "--command-timeout requires a positive integer"
+            COMMAND_TIMEOUT="$2"
+            shift 2
+            ;;
+        --render-only)
+            [[ $# -ge 2 && -d "$2" ]] || die "--render-only requires an existing inventory directory"
+            RENDER_ONLY="$2"
+            shift 2
+            ;;
         --no-tar)
             CREATE_TAR=0
             shift
@@ -128,6 +161,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -n "$RENDER_ONLY" ]]; then
+    have_cmd python3 || die "Python 3 is required for HTML reports"
+    exec python3 "$SCRIPT_DIR/render-report.py" "$RENDER_ONLY"
+fi
+have_cmd timeout || die "GNU timeout is required to bound collection commands"
 
 HOST="$(safe_name "$(hostname 2>/dev/null || printf unknown-host)")"
 HOST="${HOST:-unknown-host}"
@@ -185,11 +224,11 @@ collect_rpm_all_packages() {
 }
 
 collect_rpm_user_installed() {
-    capture dnf repoquery --userinstalled --qf "%{name} %{evr}.%{arch}" | sort
+    capture dnf_query repoquery --userinstalled --qf "%{name} %{evr}.%{arch}" | sort
 }
 
 collect_rpm_extras_not_from_enabled_repos() {
-    capture dnf repoquery --extras --qf "%{name} %{evr}.%{arch}" | sort
+    capture dnf_query repoquery --extras --qf "%{name} %{evr}.%{arch}" | sort
 }
 
 collect_rpm_third_party_vendors() {
@@ -197,11 +236,11 @@ collect_rpm_third_party_vendors() {
 }
 
 collect_dnf_repos_enabled() {
-    capture dnf repolist --enabled
+    capture dnf_query repolist --enabled
 }
 
 collect_dnf_repos_all() {
-    capture dnf repolist --all
+    capture dnf_query repolist --all
 }
 
 collect_dnf_repo_files() {
@@ -209,11 +248,11 @@ collect_dnf_repo_files() {
 }
 
 collect_dnf_modules() {
-    capture dnf module list --enabled
+    capture dnf_query module list --enabled
 }
 
 collect_dnf_groups() {
-    capture dnf group list --installed
+    capture dnf_query group list --installed
 }
 
 collect_flatpak_apps() {
@@ -281,15 +320,15 @@ collect_perl_local() {
 }
 
 collect_enabled_systemd_services() {
-    capture systemctl list-unit-files --state=enabled
+    capture systemctl --no-pager --no-ask-password list-unit-files --state=enabled
 }
 
 collect_running_systemd_services() {
-    capture systemctl --type=service --state=running
+    capture systemctl --no-pager --no-ask-password --type=service --state=running
 }
 
 collect_failed_systemd_units() {
-    capture systemctl --failed
+    capture systemctl --no-pager --no-ask-password --failed
 }
 
 collect_shell_configs() {
@@ -309,7 +348,15 @@ collect_kernel_and_drivers() {
 }
 
 collect_firewall_and_selinux() {
-    capture firewall-cmd --state; echo; capture firewall-cmd --list-all; echo; capture getenforce; capture sestatus
+    capture firewall-cmd --state
+    if (( EUID == 0 )); then
+        capture firewall-cmd --list-all
+    else
+        printf 'SKIPPED: firewall rule listing requires privileges; no authentication requested.\n'
+        printf '%s\tSKIPPED\tfirewall-cmd --list-all (requires privileges)\n' "$REPORT" >> "$STATUS_FILE" || die "Cannot write status"
+    fi
+    capture getenforce
+    capture sestatus
 }
 
 # Ordered registry keeps dispatch separate from collector implementation.
@@ -365,14 +412,22 @@ done
 REPORT=reinstall-helper
 package_file="$OUT/dnf-user-package-names.txt"
 if have_cmd dnf; then
-    if dnf repoquery --userinstalled --qf '%{name}' > "$package_file" 2> "$OUT/reinstall-query-errors.txt"; then
+    if execute dnf_query repoquery --userinstalled --qf '%{name}' > "$package_file" 2> "$OUT/reinstall-query-errors.txt"; then
         sort -u "$package_file" -o "$package_file" || die "Cannot sort package list"
         packages=()
+        invalid_packages=0
         while IFS= read -r package; do
             [[ -z "$package" ]] && continue
-            [[ "$package" =~ ^[[:alnum:]][[:alnum:]+_.-]*$ ]] || die "Unexpected package name in DNF output; reports retained at $OUT"
+            if [[ ! "$package" =~ ^[[:alnum:]][[:alnum:]+_.-]*$ ]]; then
+                invalid_packages=1
+                continue
+            fi
             packages+=("$package")
         done < "$package_file"
+        if (( invalid_packages )); then
+            printf 'Reinstall helper omitted: query output contained non-package text. See dnf-user-package-names.txt and reinstall-query-errors.txt.\n' > "$OUT/reinstall-helper-unavailable.txt" || die "Cannot write helper status"
+            printf 'reinstall-helper\tFAILED:invalid-output\tdnf repoquery\n' >> "$STATUS_FILE" || die "Cannot write status"
+        else
         helper="$OUT/reinstall-dnf-userinstalled.sh"
         {
             printf '#!/usr/bin/env bash\n# Review repositories and package names before running.\nset -euo pipefail\npackages=(\n'
@@ -380,6 +435,7 @@ if have_cmd dnf; then
             printf ')\nif (( ${#packages[@]} )); then\n    sudo dnf install -- "${packages[@]}"\nelse\n    echo "No user-installed packages recorded."\nfi\n'
         } > "$helper" || die "Cannot write reinstall helper"
         chmod 700 "$helper" || die "Cannot make reinstall helper executable"
+        fi
     else
         printf 'Reinstall helper omitted: DNF query failed. See reinstall-query-errors.txt.\n' > "$OUT/reinstall-helper-unavailable.txt" || die "Cannot write helper status"
         printf 'reinstall-helper\tFAILED\tdnf repoquery\n' >> "$STATUS_FILE" || die "Cannot write status"
@@ -392,10 +448,21 @@ fi
 
 {
     printf 'Linux System Inventory %s\nHost: %s\nOutput directory: %s\n' "$VERSION" "$HOST" "$OUT"
+    printf 'Generated: %s\n' "$(date -Is)"
+    printf 'DNF queries use cached metadata only; timeout per command: %s seconds.\n' "$COMMAND_TIMEOUT"
     printf 'Inspect collection-status.tsv for skipped or failed commands.\n'
     printf 'Reports are an inventory, not a backup. Shell configuration contents are not copied.\n'
     printf 'AppImage search maximum depth: %s\n' "$APPIMAGE_DEPTH"
 } > "$OUT/summary.txt" || die "Cannot write summary"
+
+if have_cmd python3; then
+    log "Building HTML report..."
+    if ! python3 "$SCRIPT_DIR/render-report.py" "$OUT"; then
+        printf 'WARNING: HTML rendering failed; text reports remain available.\n' >&2
+    fi
+else
+    printf 'WARNING: Python 3 unavailable; HTML omitted. Text reports remain available.\n' >&2
+fi
 
 if (( CREATE_TAR )); then
     log "Creating archive..."
