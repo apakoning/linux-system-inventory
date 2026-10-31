@@ -1,0 +1,40 @@
+name: Demo preview
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/index.html
+      - examples/generate-demo.py
+      - render-report.py
+      - .github/workflows/demo-preview.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: demo-preview
+  cancel-in-progress: true
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/demo-preview" playwright@1.56.1
+          "$RUNNER_TEMP/demo-preview/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Capture fictional demo
+        run: |
+          "$RUNNER_TEMP/demo-preview/node_modules/.bin/playwright" screenshot --browser chromium --viewport-size '1440,1120' --wait-for-timeout 1000 "file://$GITHUB_WORKSPACE/docs/index.html" examples/report-preview.png
+      - name: Update README preview image
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add examples/report-preview.png
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh fictional inventory demo screenshot'
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi

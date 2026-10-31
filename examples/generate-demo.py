@@ -26,4 +26,7 @@ with tempfile.TemporaryDirectory() as directory:
     for name, text in DATA.items():
         (temp / name).write_text(text)
     output = report.render(temp)
-    (ROOT / 'examples' / 'sample-report.html').write_text(output.read_text())
+    document = output.read_text()
+    (ROOT / 'examples' / 'sample-report.html').write_text(document)
+    (ROOT / 'docs').mkdir(exist_ok=True)
+    (ROOT / 'docs' / 'index.html').write_text(document)

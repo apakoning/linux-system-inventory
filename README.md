@@ -6,7 +6,11 @@
 
 A Bash inventory collector for RHEL and related RPM/DNF systems, with a self-contained HTML report. Inspect hardware, software, services and collection diagnostics from one searchable page. Keep the raw text for terminal work and support.
 
-*Fictional demonstration data. [Download the example HTML](examples/sample-report.html) and open it locally for search and collapsible sections. GitHub's file viewer displays its source.*
+**[View the interactive demo](https://apakoning.github.io/linux-system-inventory/)** · [Download the HTML example](https://raw.githubusercontent.com/apakoning/linux-system-inventory/main/examples/sample-report.html)
+
+![Fictional inventory report preview](examples/report-preview.png)
+
+The demo uses fictional data. Try full-text search, status filters and collapsible sections directly in your browser.
 
 ## Start here
 
@@ -81,3 +85,11 @@ Regression tests mock collection commands and cover unattended input, timeouts, 
 ## License
 
 [MIT](LICENSE). Maintained by [Alain A.P. Koningverdraag](https://github.com/apakoning).
+
+## Demo hosting
+
+The public demo is generated from fictional fixtures, never private inventories.
+Regenerate both HTML copies with `python3 examples/generate-demo.py`.
+
+GitHub Pages configuration: **Settings → Pages → Deploy from a branch → main → /docs → Save**.
+The published URL is https://apakoning.github.io/linux-system-inventory/.
